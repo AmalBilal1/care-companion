@@ -213,7 +213,6 @@ __marimo__/
 service_account.json
 
 # frontend build output
-app/static/
 
 # frontend dependencies
 frontend/node_modules/

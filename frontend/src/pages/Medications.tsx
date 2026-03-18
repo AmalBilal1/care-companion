@@ -21,7 +21,7 @@ export default function Medications() {
 
   const [showAdd, setShowAdd] = useState(false)
   const [expandedInfo, setExpandedInfo] = useState<Record<number, MedInfo | null>>({})
-  const [addForm, setAddForm] = useState({ medication_name: '', dosage: '', schedule: '', start_date: '' })
+  const [addForm, setAddForm] = useState({ medication_name: '', dosage: '', schedule: '', start_date: '', end_date: '' })
   const [addLoading, setAddLoading] = useState(false)
   const [takingId, setTakingId] = useState<number | null>(null)
 
@@ -55,7 +55,7 @@ export default function Medications() {
     if (!addForm.medication_name.trim()) return
     setAddLoading(true)
     await addMedication({ user_id: userId, ...addForm })
-    setAddForm({ medication_name: '', dosage: '', schedule: '', start_date: '' })
+    setAddForm({ medication_name: '', dosage: '', schedule: '', start_date: '', end_date: '' })
     setShowAdd(false)
     setAddLoading(false)
     refetch()
@@ -136,6 +136,11 @@ export default function Medications() {
                 <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', display: 'block', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.3px' }}>Start Date</label>
                 <input style={inputStyle} type="date"
                   value={addForm.start_date} onChange={e => setAddForm(f => ({ ...f, start_date: e.target.value }))} />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', display: 'block', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.3px' }}>End Date</label>
+                <input style={inputStyle} type="date"
+                  value={addForm.end_date} onChange={e => setAddForm(f => ({ ...f, end_date: e.target.value }))} />
               </div>
             </div>
             <button type="submit" disabled={addLoading} style={{

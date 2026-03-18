@@ -21,6 +21,12 @@ from app.agent import (
 load_dotenv()
 init_db()
 
+def _iso(dt) -> str | None:
+    """Return ISO string with Z suffix so browsers parse as UTC."""
+    if dt is None:
+        return None
+    return dt.isoformat() + "Z"
+
 app = FastAPI(
     title="CareCompanion Agent API",
     description="AI-powered post-discharge healthcare assistant",
@@ -182,7 +188,7 @@ async def get_profile(user_id: int):
         # Serialize non-JSON-serializable types
         for k, v in profile.items():
             if isinstance(v, (date, datetime)):
-                profile[k] = v.isoformat()
+                profile[k] = _iso(v) if isinstance(v, datetime) else v.isoformat()
         profile["calendar_connected"] = bool(profile.get("google_refresh_token"))
         profile.pop("google_refresh_token", None)  # never send token to frontend
         return profile
@@ -268,20 +274,27 @@ async def health_check():
 # ── Symptoms ───────────────────────────────────────────────────────────────────
 
 @app.get("/symptoms/{user_id}")
-async def get_symptoms(user_id: int):
+async def get_symptoms(user_id: int, local_date: Optional[str] = None, utc_offset: Optional[int] = 0):
     conn = get_db_connection()
     cur = conn.cursor()
     try:
-        today = date.today()
+        try:
+            today = date.fromisoformat(local_date) if local_date else date.today()
+        except ValueError:
+            today = date.today()
+        # Use UTC window based on local date + offset
+        utc_offset_hours = int(utc_offset or 0)
+        utc_start = datetime.combine(today, datetime.min.time()) - timedelta(hours=utc_offset_hours)
+        utc_end = utc_start + timedelta(hours=24)
         cur.execute("""
             SELECT symptom_id, symptom, severity, condition_type, logged_at
             FROM symptom_logs
-            WHERE user_id = %s AND DATE(logged_at) = %s
+            WHERE user_id = %s AND logged_at >= %s AND logged_at < %s
             ORDER BY logged_at DESC
-        """, (user_id, today))
+        """, (user_id, utc_start, utc_end))
         today_rows = [
             {"symptom_id": r[0], "symptom": r[1], "severity": r[2],
-             "condition_type": r[3], "logged_at": r[4].isoformat()}
+             "condition_type": r[3], "logged_at": _iso(r[4])}
             for r in cur.fetchall()
         ]
 
@@ -289,11 +302,13 @@ async def get_symptoms(user_id: int):
         trend = []
         for i in range(6, -1, -1):
             d = today - timedelta(days=i)
+            d_start = datetime.combine(d, datetime.min.time()) - timedelta(hours=utc_offset_hours)
+            d_end = d_start + timedelta(hours=24)
             cur.execute("""
                 SELECT AVG(severity), COUNT(*)
                 FROM symptom_logs
-                WHERE user_id = %s AND DATE(logged_at) = %s
-            """, (user_id, d))
+                WHERE user_id = %s AND logged_at >= %s AND logged_at < %s
+            """, (user_id, d_start, d_end))
             row = cur.fetchone()
             trend.append({
                 "date": d.isoformat(),
@@ -307,7 +322,7 @@ async def get_symptoms(user_id: int):
             WHERE user_id = %s ORDER BY logged_at DESC LIMIT 1
         """, (user_id,))
         last = cur.fetchone()
-        last_logged = {"symptom": last[0], "logged_at": last[1].isoformat()} if last else None
+        last_logged = {"symptom": last[0], "logged_at": _iso(last[1])} if last else None
 
         return {"today": today_rows, "trend": trend, "last_logged": last_logged}
     finally:
@@ -371,7 +386,7 @@ async def get_medications(user_id: int):
                 "schedule": r[3],
                 "start_date": r[4].isoformat() if r[4] else None,
                 "end_date": r[5].isoformat() if r[5] else None,
-                "created_at": r[6].isoformat() if r[6] else None,
+                "created_at": _iso(r[6]),
                 "taken_today": bool(r[7]),
                 "next_dose_time": next_dose,
             })
@@ -391,7 +406,7 @@ async def mark_medication_taken(user_id: int, req: MarkTakenRequest):
             ON CONFLICT (medication_id, taken_date) DO NOTHING
         """, (user_id, req.medication_id))
         conn.commit()
-        return {"success": True, "taken_at": datetime.now().isoformat()}
+        return {"success": True, "taken_at": _iso(datetime.now())}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
@@ -455,13 +470,13 @@ async def get_appointments_api(user_id: int):
         def row_to_dict(r):
             return {
                 "id": r[0],
-                "appointment_time": r[1].isoformat() if r[1] else None,
+                "appointment_time": _iso(r[1]),
                 "reason": r[2],
                 "location": r[3],
                 "appointment_type": r[4] or "follow-up",
                 "status": r[5] or "upcoming",
                 "source": r[6] or "manual",
-                "created_at": r[7].isoformat() if r[7] else None,
+                "created_at": _iso(r[7]),
             }
         upcoming = [row_to_dict(r) for r in rows if (r[5] or "upcoming") == "upcoming"]
         completed = [row_to_dict(r) for r in rows if (r[5] or "upcoming") == "completed"]
@@ -543,7 +558,7 @@ async def get_summaries(user_id: int):
             "summary_id": r[0], "title": r[1], "ai_summary": r[2],
             "user_notes": r[3],
             "visit_date": r[4].isoformat() if r[4] else None,
-            "created_at": r[5].isoformat() if r[5] else None,
+            "created_at": _iso(r[5]),
         } for r in rows]
         last_date = summaries[0]["created_at"] if summaries else None
         return {"summaries": summaries, "last_summary_date": last_date}

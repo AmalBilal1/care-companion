@@ -149,7 +149,7 @@ export default function Dashboard() {
           sub={nextAppt ? fmtDate(nextAppt.appointment_time) ?? undefined : 'Tap to schedule one'}
           loading={aLoading} onClick={() => navigate('/appointments')} />
         <StatCard icon="📊" title="Visit Summaries" color="#f59e0b"
-          blurb={sumData?.summaries?.length ? `${sumData.summaries.length} summary${sumData.summaries.length > 1 ? 'ies' : ''}` : 'No summaries yet'}
+          blurb={sumData?.summaries?.length ? `${sumData.summaries.length} ${sumData.summaries.length > 1 ? 'summaries' : 'summary'}` : 'No summaries yet'}
           sub={lastSummary ? `Last generated ${fmtDate(lastSummary)}` : 'Generate your first summary'}
           loading={sumLoading} onClick={() => navigate('/summaries')} />
       </div>

@@ -39,9 +39,14 @@ CALENDAR_ID = os.environ.get("GOOGLE_CALENDAR_ID", "")
 
 
 def _authenticate_google_calendar():
-    credentials = service_account.Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE, scopes=SCOPES
-    )
+    sa_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if sa_json:
+        sa_info = json.loads(sa_json)
+        credentials = service_account.Credentials.from_service_account_info(sa_info, scopes=SCOPES)
+    else:
+        credentials = service_account.Credentials.from_service_account_file(
+            SERVICE_ACCOUNT_FILE, scopes=SCOPES
+        )
     return build("calendar", "v3", credentials=credentials)
 
 
@@ -445,9 +450,11 @@ def schedule_appointment(user_id: int, appointment_datetime: str, reason: str) -
         description=f"CareCompanion appointment for patient {user_id}",
     )
 
-    result = f"✅ Appointment scheduled for {appointment_time.strftime('%B %d, %Y at %I:%M %p')} — {reason} (ID: {appt_id})"
+    result = f"✅ Appointment saved to database for {appointment_time.strftime('%B %d, %Y at %I:%M %p')} — {reason} (ID: {appt_id})"
     if calendar_link:
-        result += f"\n🔗 Calendar: {calendar_link}"
+        result += f"\n🔗 Google Calendar event created: {calendar_link}"
+    else:
+        result += "\n⚠️ Google Calendar sync FAILED — appointment is in the database but NOT on the calendar."
     return result
 
 

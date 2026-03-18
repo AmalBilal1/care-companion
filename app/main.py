@@ -691,7 +691,7 @@ if os.path.exists(_static_dir):
         app.mount("/assets", StaticFiles(directory=_assets_dir), name="assets")
 
 @app.get("/{full_path:path}")
-async def serve_spa(_full_path: str):
+async def serve_spa(full_path: str):
     index = os.path.join(_static_dir, "index.html")
     if os.path.exists(index):
         return FileResponse(index)

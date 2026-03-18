@@ -214,50 +214,40 @@ async def update_profile(user_id: int, req: ProfileUpdateRequest):
 @app.get("/auth/google/calendar")
 async def google_calendar_auth(user_id: int):
     """Returns the Google OAuth URL for calendar access."""
-    from google_auth_oauthlib.flow import Flow
-    flow = Flow.from_client_config(
-        {
-            "web": {
-                "client_id": os.environ["GOOGLE_CLIENT_ID"],
-                "client_secret": os.environ["GOOGLE_CLIENT_SECRET"],
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token",
-                "redirect_uris": [os.environ.get("CALENDAR_REDIRECT_URI", "http://localhost:8000/auth/google/calendar/callback")],
-            }
-        },
-        scopes=["https://www.googleapis.com/auth/calendar.events"],
-    )
-    flow.redirect_uri = os.environ.get("CALENDAR_REDIRECT_URI", "http://localhost:8000/auth/google/calendar/callback")
-    auth_url, _ = flow.authorization_url(
-        access_type="offline",
-        include_granted_scopes="true",
-        prompt="consent",
-        state=str(user_id),
-    )
+    import urllib.parse
+    client_id = os.environ["GOOGLE_CLIENT_ID"]
+    redirect_uri = os.environ.get("CALENDAR_REDIRECT_URI", "http://localhost:8000/auth/google/calendar/callback")
+    params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": "https://www.googleapis.com/auth/calendar.events",
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": str(user_id),
+    }
+    auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)
     return {"auth_url": auth_url}
 
 @app.get("/auth/google/calendar/callback")
 async def google_calendar_callback(code: str, state: str):
     """Handles OAuth callback, stores refresh token, redirects to frontend."""
-    from google_auth_oauthlib.flow import Flow
+    import requests as http_requests
+    import urllib.parse
     from fastapi.responses import RedirectResponse
     try:
         redirect_uri = os.environ.get("CALENDAR_REDIRECT_URI", "http://localhost:8000/auth/google/calendar/callback")
-        flow = Flow.from_client_config(
-            {
-                "web": {
-                    "client_id": os.environ["GOOGLE_CLIENT_ID"],
-                    "client_secret": os.environ["GOOGLE_CLIENT_SECRET"],
-                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                    "token_uri": "https://oauth2.googleapis.com/token",
-                    "redirect_uris": [redirect_uri],
-                }
-            },
-            scopes=["https://www.googleapis.com/auth/calendar.events"],
-        )
-        flow.redirect_uri = redirect_uri
-        flow.fetch_token(code=code)
-        refresh_token = flow.credentials.refresh_token
+        token_resp = http_requests.post("https://oauth2.googleapis.com/token", data={
+            "code": code,
+            "client_id": os.environ["GOOGLE_CLIENT_ID"],
+            "client_secret": os.environ["GOOGLE_CLIENT_SECRET"],
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        })
+        token_data = token_resp.json()
+        refresh_token = token_data.get("refresh_token")
+        if not refresh_token:
+            raise Exception(f"No refresh token returned: {token_data}")
         user_id = int(state)
         conn = get_db_connection()
         cur = conn.cursor()
@@ -267,7 +257,7 @@ async def google_calendar_callback(code: str, state: str):
         conn.close()
         return RedirectResponse(url="/dashboard?calendar=connected")
     except Exception as e:
-        return RedirectResponse(url=f"/dashboard?calendar=error&msg={str(e)}")
+        return RedirectResponse(url=f"/dashboard?calendar=error&msg={urllib.parse.quote(str(e))}")
 
 # ── Health ─────────────────────────────────────────────────────────────────────
 

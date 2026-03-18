@@ -65,7 +65,7 @@ export default function Dashboard() {
   useEffect(() => {
     const params = new URLSearchParams(location.search)
     if (params.get('calendar') === 'connected') setCalendarToast('Google Calendar connected!')
-    if (params.get('calendar') === 'error') setCalendarToast('Calendar connection failed.')
+    if (params.get('calendar') === 'error') setCalendarToast(`Calendar connection failed: ${params.get('msg') || 'unknown error'}`)
   }, [location])
 
   async function handleConnectCalendar() {

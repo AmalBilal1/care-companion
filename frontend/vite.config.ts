@@ -20,6 +20,7 @@ export default defineConfig({
       '/appointments': 'http://localhost:8000',
       '/summaries': 'http://localhost:8000',
       '/upload-discharge': 'http://localhost:8000',
+      '/auth': 'http://localhost:8000',
     },
   },
 })

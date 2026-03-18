@@ -14,8 +14,6 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.tools import tool
 from langgraph.prebuilt import create_react_agent
 
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
 
 load_dotenv()
 
@@ -32,40 +30,102 @@ _genai_model = genai.GenerativeModel("gemini-2.0-flash")
 
 # ── Google Calendar ────────────────────────────────────────────────────────────
 
-SERVICE_ACCOUNT_FILE = "service_account.json"
-SCOPES = ["https://www.googleapis.com/auth/calendar"]
+SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 TIMEZONE = "America/New_York"
-CALENDAR_ID = os.environ.get("GOOGLE_CALENDAR_ID", "")
 
 
-def _authenticate_google_calendar():
-    sa_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
-    if sa_json:
-        sa_info = json.loads(sa_json)
-        credentials = service_account.Credentials.from_service_account_info(sa_info, scopes=SCOPES)
-    else:
-        credentials = service_account.Credentials.from_service_account_file(
-            SERVICE_ACCOUNT_FILE, scopes=SCOPES
-        )
-    return build("calendar", "v3", credentials=credentials)
+def _get_calendar_service(refresh_token: str):
+    """Build a Calendar API service for a specific user using their refresh token."""
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
+    creds = Credentials(
+        token=None,
+        refresh_token=refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=os.environ["GOOGLE_CLIENT_ID"],
+        client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
+        scopes=SCOPES,
+    )
+    return build("calendar", "v3", credentials=creds)
 
 
-def _sync_to_calendar(appointment_time, summary, description=None, duration_minutes=30):
+def _create_calendar_event(refresh_token: str, summary: str, description: str, start_dt: datetime, duration_minutes: int = 60) -> str | None:
+    """Create a single calendar event. Returns event ID or None on failure."""
     try:
-        service = _authenticate_google_calendar()
-        if appointment_time.tzinfo is None:
-            appointment_time = appointment_time.replace(tzinfo=ZoneInfo("America/New_York"))
+        service = _get_calendar_service(refresh_token)
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=ZoneInfo(TIMEZONE))
+        end_dt = start_dt + timedelta(minutes=duration_minutes)
         event = {
             "summary": summary,
-            "description": description or "",
-            "start": {"dateTime": appointment_time.isoformat(), "timeZone": TIMEZONE},
-            "end": {"dateTime": (appointment_time + timedelta(minutes=duration_minutes)).isoformat(), "timeZone": TIMEZONE},
+            "description": description,
+            "start": {"dateTime": start_dt.isoformat(), "timeZone": TIMEZONE},
+            "end": {"dateTime": end_dt.isoformat(), "timeZone": TIMEZONE},
         }
-        created = service.events().insert(calendarId=CALENDAR_ID, body=event).execute()
-        return created.get("htmlLink")
+        created = service.events().insert(calendarId="primary", body=event).execute()
+        return created.get("id")
     except Exception as e:
-        print(f"⚠️ Calendar sync failed: {e}")
+        print(f"Calendar event creation failed: {e}")
         return None
+
+
+def _create_recurring_medication_events(refresh_token: str, med_name: str, dosage: str, schedule: str, start_date, end_date) -> list[str]:
+    """Create daily recurring calendar reminders for a medication. Returns list of event IDs."""
+    try:
+        from datetime import date as date_type
+        service = _get_calendar_service(refresh_token)
+
+        # Parse times from schedule
+        freq = (schedule or "once daily").lower()
+        if "twice" in freq:
+            times = ["08:00", "20:00"]
+        elif "three" in freq:
+            times = ["08:00", "14:00", "20:00"]
+        elif "four" in freq:
+            times = ["08:00", "12:00", "16:00", "20:00"]
+        elif "bedtime" in freq:
+            times = ["21:00"]
+        elif "as needed" in freq or "prn" in freq:
+            times = ["08:00"]
+        else:
+            times = ["08:00"]
+
+        # Parse start/end dates
+        if isinstance(start_date, str):
+            start_date = date_parser.parse(start_date).date()
+        elif isinstance(start_date, datetime):
+            start_date = start_date.date()
+        if not start_date:
+            start_date = date_type.today()
+
+        if isinstance(end_date, str):
+            end_date = date_parser.parse(end_date).date()
+        elif isinstance(end_date, datetime):
+            end_date = end_date.date()
+        if not end_date:
+            end_date = start_date + timedelta(days=14)  # default 14 days
+
+        event_ids = []
+        for time_str in times:
+            hour, minute = map(int, time_str.split(":"))
+            start_dt = datetime(start_date.year, start_date.month, start_date.day, hour, minute, tzinfo=ZoneInfo(TIMEZONE))
+            end_dt_date = end_date
+            # Build RRULE until date
+            until_str = end_dt_date.strftime("%Y%m%dT235959Z")
+            event = {
+                "summary": f"💊 {med_name} {dosage or ''}".strip(),
+                "description": f"Medication reminder: {med_name}\nDosage: {dosage or 'as prescribed'}\nSchedule: {schedule or 'once daily'}",
+                "start": {"dateTime": start_dt.isoformat(), "timeZone": TIMEZONE},
+                "end": {"dateTime": (start_dt + timedelta(minutes=15)).isoformat(), "timeZone": TIMEZONE},
+                "recurrence": [f"RRULE:FREQ=DAILY;UNTIL={until_str}"],
+                "reminders": {"useDefault": False, "overrides": [{"method": "popup", "minutes": 10}]},
+            }
+            created = service.events().insert(calendarId="primary", body=event).execute()
+            event_ids.append(created.get("id"))
+        return event_ids
+    except Exception as e:
+        print(f"Medication calendar events failed: {e}")
+        return []
 
 # ── Database ───────────────────────────────────────────────────────────────────
 
@@ -77,7 +137,8 @@ def get_db_connection():
         password=os.environ["DB_PASSWORD"],
         port=os.environ["DB_PORT"],
         sslmode="require",
-        connect_timeout=10,
+        connect_timeout=30,
+        options="-c statement_timeout=15000",
     )
 
 
@@ -136,7 +197,47 @@ def init_db():
             remind_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS medication_taken (
+            taken_id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(user_id) ON DELETE CASCADE,
+            medication_id INTEGER REFERENCES medication_logs(medication_id) ON DELETE CASCADE,
+            taken_date DATE NOT NULL DEFAULT CURRENT_DATE,
+            taken_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (medication_id, taken_date)
+        );
+        CREATE TABLE IF NOT EXISTS visit_summaries (
+            summary_id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(user_id) ON DELETE CASCADE,
+            title TEXT NOT NULL DEFAULT 'Visit Summary',
+            ai_summary TEXT,
+            user_notes TEXT,
+            visit_date DATE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
     """)
+    # Schema migrations — safe to run on every startup
+    migrations = [
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS date_of_birth DATE",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS gender TEXT",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS primary_condition TEXT",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS reminder_preference TEXT DEFAULT 'email'",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS preferred_time TEXT",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS location TEXT",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS patient_id_number TEXT",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS insurance_id TEXT",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS medical_history TEXT",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarded BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS location TEXT",
+        "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS appointment_type TEXT DEFAULT 'follow-up'",
+        "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'upcoming'",
+        "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'manual'",
+        "ALTER TABLE symptom_logs ADD COLUMN IF NOT EXISTS condition_type TEXT",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS google_refresh_token TEXT",
+        "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS calendar_event_id TEXT",
+        "ALTER TABLE medication_logs ADD COLUMN IF NOT EXISTS calendar_event_id TEXT",
+    ]
+    for sql in migrations:
+        cur.execute(sql)
     conn.commit()
     cur.close()
     conn.close()
@@ -410,13 +511,6 @@ Discharge Instructions:
             try:
                 appointment_time = date_parser.parse(dt_string, default=datetime(datetime.now().year, 1, 1))
                 _create_appointment_db(user_id, appointment_time, reason)
-                link = _sync_to_calendar(
-                    appointment_time,
-                    summary=f"Medical Appointment: {reason or 'Follow-up'}",
-                    description=f"CareCompanion appointment for patient {user_id}",
-                )
-                if not link:
-                    calendar_errors.append(reason or "appointment")
             except Exception as e:
                 calendar_errors.append(f"{reason}: {str(e)}")
 
@@ -429,8 +523,6 @@ Discharge Instructions:
         f"- Appointments scheduled: {len(parsed.get('appointments', []))}\n"
         f"- Care instructions saved: {len(parsed.get('care_instructions', []))}"
     )
-    if calendar_errors:
-        result += f"\n⚠️ Calendar sync failed for: {', '.join(calendar_errors)}"
     return result
 
 
@@ -444,17 +536,7 @@ def schedule_appointment(user_id: int, appointment_datetime: str, reason: str) -
         return f"❌ Could not parse date: '{appointment_datetime}'. Please provide a clearer date and time."
 
     appt_id = _create_appointment_db(user_id, appointment_time, reason)
-    calendar_link = _sync_to_calendar(
-        appointment_time,
-        summary=f"Medical Appointment: {reason}",
-        description=f"CareCompanion appointment for patient {user_id}",
-    )
-
     result = f"✅ Appointment saved to database for {appointment_time.strftime('%B %d, %Y at %I:%M %p')} — {reason} (ID: {appt_id})"
-    if calendar_link:
-        result += f"\n🔗 Google Calendar event created: {calendar_link}"
-    else:
-        result += "\n⚠️ Google Calendar sync FAILED — appointment is in the database but NOT on the calendar."
     return result
 
 
@@ -761,7 +843,7 @@ Your goal is to help patients manage their post-discharge recovery by:
 - Providing guidance based on their specific medical condition
 
 CRITICAL RULES — you must follow these exactly:
-- Always use user_id=1 for every tool call unless explicitly told otherwise
+- Each message begins with [user_id=N]. You MUST extract that number and use it as user_id for every single tool call. Never use any other user_id.
 - NEVER summarize or acknowledge discharge information from memory. You MUST call parse_discharge_instructions first, then report what the tool returned.
 - NEVER confirm that an appointment was scheduled unless schedule_appointment or parse_discharge_instructions tool actually returned a success message.
 - NEVER confirm that a symptom was logged unless log_symptom_check tool actually returned a success message.

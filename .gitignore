@@ -211,3 +211,9 @@ __marimo__/
 
 # google calendar api integration
 service_account.json
+
+# frontend build output
+app/static/
+
+# frontend dependencies
+frontend/node_modules/

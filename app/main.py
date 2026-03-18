@@ -470,7 +470,7 @@ async def get_appointments_api(user_id: int):
         def row_to_dict(r):
             return {
                 "id": r[0],
-                "appointment_time": _iso(r[1]),
+                "appointment_time": r[1].isoformat() if r[1] else None,
                 "reason": r[2],
                 "location": r[3],
                 "appointment_type": r[4] or "follow-up",

@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+langchain-core
+langchain-community
+langchain-google-genai
+langchain-text-splitters
+langgraph
+langsmith
+chromadb
+pypdf
+python-dotenv
+psycopg2-binary
+google-generativeai
+google-auth
+google-api-python-client
+python-dateutil
